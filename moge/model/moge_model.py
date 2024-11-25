@@ -1,4 +1,4 @@
-from typing import *
+from typing import IO, Literal, List, Union, Tuple, Optional, Dict, Any
 from numbers import Number
 from functools import partial
 from pathlib import Path
@@ -12,12 +12,12 @@ import torch.nn.functional as F
 import torch.utils
 import torch.utils.checkpoint
 import torch.version
-import utils3d
+import MoGe.utils3d as utils3d
 from huggingface_hub import hf_hub_download
 
-from ..utils.geometry_torch import image_plane_uv, point_map_to_depth, gaussian_blur_2d
-from .utils import wrap_dinov2_attention_with_sdpa, wrap_module_with_gradient_checkpointing, unwrap_module_with_gradient_checkpointing
-from ..utils.tools import timeit
+from MoGe.moge.utils.geometry_torch import image_plane_uv, point_map_to_depth, custom_point_map_to_depth, gaussian_blur_2d
+from MoGe.moge.model.utils import wrap_dinov2_attention_with_sdpa, wrap_module_with_gradient_checkpointing, unwrap_module_with_gradient_checkpointing
+from MoGe.moge.utils.tools import timeit
 
 
 class ResidualConvBlock(nn.Module):  
@@ -337,7 +337,8 @@ class MoGeModel(nn.Module):
         points, mask = output['points'], output.get('mask', None)
 
         # Get camera-origin-centered point map
-        depth, fov_x, fov_y, z_shift = point_map_to_depth(points, None if mask is None else mask > 0.5)
+        # depth, fov_x, fov_y, z_shift = point_map_to_depth(points, None if mask is None else mask > 0.5)
+        depth, fov_x, fov_y, z_shift = custom_point_map_to_depth(points, None if mask is None else mask > 0.5, focal_length=1078.0 * 3.45 * 1e-3)
         intrinsics = utils3d.torch.intrinsics_from_fov_xy(fov_x, fov_y)
         
         # If projection constraint is forces, recompute the point map using the actual depth map

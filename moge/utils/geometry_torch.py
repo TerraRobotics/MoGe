@@ -7,10 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.types
-import utils3d
+import MoGe.utils3d as utils3d
 
-from .tools import timeit
-from .geometry_numpy import solve_optimal_shift_focal
+from MoGe.moge.utils.tools import timeit
+from MoGe.moge.utils.geometry_numpy import solve_optimal_shift_focal, solve_optimal_shift
 
 
 def weighted_mean(x: torch.Tensor, w: torch.Tensor = None, dim: Union[int, torch.Size] = None, keepdim: bool = False, eps: float = 1e-7) -> torch.Tensor:
@@ -149,6 +149,60 @@ def point_map_to_depth(points: torch.Tensor, mask: torch.Tensor = None, downsamp
 
     fov_x = 2 * torch.atan(width / diagonal / optim_focal)
     fov_y = 2 * torch.atan(height / diagonal / optim_focal)
+    
+    depth = (points[..., 2] + optim_shift[:, None, None]).reshape(shape[:-1])
+    fov_x = fov_x.reshape(shape[:-3])
+    fov_y = fov_y.reshape(shape[:-3])
+    optim_shift = optim_shift.reshape(shape[:-3])
+
+    return depth, fov_x, fov_y, optim_shift
+
+
+def custom_point_map_to_depth(points: torch.Tensor, mask: torch.Tensor = None, downsample_size: Tuple[int, int] = (64, 64), focal_length: float = None):
+    """
+    Recover the depth map and FoV from a point map with unknown z shift and focal.
+
+    Note that it assumes:
+    - the optical center is at the center of the map
+    - the map is undistorted
+    - the map is isometric in the x and y directions
+
+    ### Parameters:
+    - `points: torch.Tensor` of shape (..., H, W, 3)
+    - `downsample_size: Tuple[int, int]` in (height, width), the size of the downsampled map. Downsampling produces approximate solution and is efficient for large maps.
+
+    ### Returns:
+    - `depth: torch.Tensor` of shape (..., H, W)
+    - `fov_x: torch.Tensor` of shape (...)
+    - `fov_y: torch.Tensor` of shape (...)
+    - `shift: torch.Tensor` of shape (...), the z shift, making `depth = points[..., 2] + shift`
+    """
+    shape = points.shape
+    height, width = points.shape[-3], points.shape[-2]
+    diagonal = (height ** 2 + width ** 2) ** 0.5
+
+    points = points.reshape(-1, *shape[-3:])
+    mask = None if mask is None else mask.reshape(-1, *shape[-3:-1])
+    uv = image_plane_uv(width, height, dtype=points.dtype, device=points.device)  # (H, W, 2)
+
+    points_lr = F.interpolate(points.permute(0, 3, 1, 2), downsample_size, mode='bilinear').permute(0, 2, 3, 1)
+    uv_lr = F.interpolate(uv.unsqueeze(0).permute(0, 3, 1, 2), downsample_size, mode='bilinear').squeeze(0).permute(1, 2, 0)
+    mask_lr = None if mask is None else F.interpolate(mask.to(torch.float32).unsqueeze(1), downsample_size, mode='nearest').squeeze(1) > 0
+    
+    uv_lr_np = uv_lr.cpu().numpy()
+    points_lr_np = points_lr.detach().cpu().numpy()
+    mask_lr_np = None if mask is None else mask_lr.cpu().numpy()
+    optim_shift = []
+    for i in range(points.shape[0]):
+        points_lr_i_np = points_lr_np[i] if mask is None else points_lr_np[i][mask_lr_np[i]]
+        uv_lr_i_np = uv_lr_np if mask is None else uv_lr_np[mask_lr_np[i]]
+        optim_shift_i = solve_optimal_shift(uv_lr_i_np, points_lr_i_np, focal_length)
+        optim_shift.append(float(optim_shift_i))
+    optim_shift = torch.tensor(optim_shift, device=points.device, dtype=points.dtype)
+
+    focal_length = torch.tensor(focal_length).cuda()
+    fov_x = 2 * torch.atan(width / diagonal / focal_length)
+    fov_y = 2 * torch.atan(height / diagonal / focal_length)
     
     depth = (points[..., 2] + optim_shift[:, None, None]).reshape(shape[:-1])
     fov_x = fov_x.reshape(shape[:-3])

@@ -3,9 +3,9 @@ from functools import partial
 import math
 
 import numpy as np
-import utils3d
+import MoGe.utils3d as utils3d
 
-from .tools import timeit
+from MoGe.moge.utils.tools import timeit
 
 def weighted_mean_numpy(x: np.ndarray, w: np.ndarray = None, axis: Union[int, Tuple[int,...]] = None, keepdims: bool = False, eps: float = 1e-7) -> np.ndarray:
     if w is None:
@@ -111,6 +111,43 @@ def solve_optimal_shift_focal(uv: np.ndarray, xyz: np.ndarray, ransac_iters: int
     optim_focal = (xy_proj * uv).sum() / (xy_proj * xy_proj).sum()
 
     return optim_shift, optim_focal
+
+
+def solve_optimal_shift(uv: np.ndarray, xyz: np.ndarray, focal_length: float, ransac_iters: int = None, ransac_hypothetical_size: float = 0.1, ransac_threshold: float = 0.1):
+    "Solve `min |focal * xy / (z + shift) - uv|` with respect to shift"
+    from scipy.optimize import least_squares
+    uv, xy, z = uv.reshape(-1, 2), xyz[..., :2].reshape(-1, 2), xyz[..., 2].reshape(-1)
+
+    def fn(uv: np.ndarray, xy: np.ndarray, z: np.ndarray, shift: np.ndarray):
+        xy_proj = focal_length * xy / (z + shift)[: , None]
+        err = (xy_proj - uv).ravel()
+        return err
+
+    initial_shift = 0 #-z.min(keepdims=True) + 1.0
+
+    if ransac_iters is None:
+        solution = least_squares(partial(fn, uv, xy, z), x0=initial_shift, ftol=1e-3, method='lm')
+        optim_shift = solution['x'].squeeze().astype(np.float32)
+    else:
+        best_err, best_shift = np.inf, None
+        for _ in range(ransac_iters):
+            maybe_inliers = np.random.choice(len(z), size=int(ransac_hypothetical_size * len(z)), replace=False)
+            solution = least_squares(partial(fn, uv[maybe_inliers], xy[maybe_inliers], z[maybe_inliers]), x0=initial_shift, ftol=1e-3, method='lm')
+            maybe_shift = solution['x'].squeeze().astype(np.float32)
+            confirmed_inliers = np.linalg.norm(fn(uv, xy, z, maybe_shift).reshape(-1, 2), axis=-1) < ransac_threshold
+            if confirmed_inliers.sum() > 10:
+                solution = least_squares(partial(fn, uv[confirmed_inliers], xy[confirmed_inliers], z[confirmed_inliers]), x0=maybe_shift, ftol=1e-3, method='lm')
+                better_shift = solution['x'].squeeze().astype(np.float32)
+            else:
+                better_shift = maybe_shift
+            err = np.linalg.norm(fn(uv, xy, z, better_shift).reshape(-1, 2), axis=-1).clip(max=ransac_threshold).mean()
+            if err < best_err:
+                best_err, best_shift = err, better_shift
+                initial_shift = best_shift
+            
+        optim_shift = best_shift
+
+    return optim_shift
 
 
 def point_map_to_depth_numpy(points: np.ndarray, mask: np.ndarray = None, downsample_size: Tuple[int, int] = (64, 64)):
