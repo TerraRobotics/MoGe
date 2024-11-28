@@ -337,8 +337,8 @@ class MoGeModel(nn.Module):
         points, mask = output['points'], output.get('mask', None)
 
         # Get camera-origin-centered point map
-        # depth, fov_x, fov_y, z_shift = point_map_to_depth(points, None if mask is None else mask > 0.5)
-        depth, fov_x, fov_y, z_shift = custom_point_map_to_depth(points, None if mask is None else mask > 0.5, focal_length=1078.0 * 3.45 * 1e-3)
+        depth, fov_x, fov_y, z_shift = point_map_to_depth(points, None if mask is None else mask > 0.5)
+        # depth, fov_x, fov_y, z_shift = custom_point_map_to_depth(points, None if mask is None else mask > 0.5, focal_length=1078.0 * 3.45 * 1e-3)
         intrinsics = utils3d.torch.intrinsics_from_fov_xy(fov_x, fov_y)
         
         # If projection constraint is forces, recompute the point map using the actual depth map
